@@ -1,0 +1,35 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: support_agent_app
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://support_app:dev_password_change_me@postgres:5432/support_agent
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    container_name: support_agent_db
+    environment:
+      POSTGRES_USER: support_app
+      POSTGRES_PASSWORD: dev_password_change_me
+      POSTGRES_DB: support_agent
+    ports:
+      - "5439:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U support_app -d support_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
