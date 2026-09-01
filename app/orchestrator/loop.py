@@ -5,11 +5,16 @@ from openai import OpenAI
 from app.core.config import settings
 from app.orchestrator.tools import GET_ORDER_STATUS_SCHEMA, get_order_status
 
-# One user question here resolves in at most 1-2 tool round-trips (a single
-# order lookup, maybe a follow-up). 5 leaves headroom for a legitimate
-# multi-tool question without letting a confused model burn API calls
-# (cost + latency) indefinitely if it never converges on an answer.
+# A single order lookup resolves in one tool round-trip; a couple of
+# follow-up lookups in the same conversation might take two or three.
+# 5 gives headroom for that while still bounding cost/latency if the
+# model gets stuck re-requesting tools without converging.
 MAX_ITERATIONS = 5
+
+FAILURE_MESSAGE = (
+    "I wasn't able to complete this request after several attempts. "
+    "Please try again or contact support directly."
+)
 
 TOOL_SCHEMAS = [GET_ORDER_STATUS_SCHEMA]
 
@@ -20,8 +25,20 @@ TOOL_DISPATCH = {
 _client = OpenAI(api_key=settings.openai_api_key)
 
 
-class AgentLoopError(Exception):
-    """Raised when the loop hits the iteration cap without a final answer."""
+def _run_tool_call(tool_call) -> dict:
+    tool_fn = TOOL_DISPATCH.get(tool_call.function.name)
+    if tool_fn is None:
+        return {"error": f"unknown tool '{tool_call.function.name}'"}
+
+    try:
+        args = json.loads(tool_call.function.arguments)
+    except json.JSONDecodeError:
+        return {"error": "invalid tool call arguments: not valid JSON"}
+
+    try:
+        return tool_fn(**args)
+    except TypeError as exc:
+        return {"error": f"invalid arguments for tool '{tool_call.function.name}': {exc}"}
 
 
 def run_agent_loop(user_message: str) -> str:
@@ -33,21 +50,16 @@ def run_agent_loop(user_message: str) -> str:
             messages=messages,
             tools=TOOL_SCHEMAS,
         )
-        message = response.choices[0].message
+        choice = response.choices[0]
+        message = choice.message
 
-        if not message.tool_calls:
+        if choice.finish_reason != "tool_calls":
             return message.content or ""
 
         messages.append(message.model_dump(exclude_unset=True))
 
         for tool_call in message.tool_calls:
-            tool_fn = TOOL_DISPATCH.get(tool_call.function.name)
-            if tool_fn is None:
-                result = {"error": f"Unknown tool '{tool_call.function.name}'"}
-            else:
-                args = json.loads(tool_call.function.arguments)
-                result = tool_fn(**args)
-
+            result = _run_tool_call(tool_call)
             messages.append(
                 {
                     "role": "tool",
@@ -56,6 +68,4 @@ def run_agent_loop(user_message: str) -> str:
                 }
             )
 
-    raise AgentLoopError(
-        f"Exceeded {MAX_ITERATIONS} tool-calling iterations without a final answer."
-    )
+    return FAILURE_MESSAGE

@@ -18,18 +18,13 @@ GET_ORDER_STATUS_SCHEMA = {
 }
 
 _FAKE_ORDERS = {
-    "ORD-100": {"status": "shipped", "carrier": "UPS", "estimated_delivery": "2026-09-05"},
-    "ORD-200": {"status": "processing", "carrier": None, "estimated_delivery": None},
-    "ORD-300": {"status": "delivered", "carrier": "FedEx", "estimated_delivery": "2026-08-28"},
+    "ORD-100": "shipped",
+    "ORD-200": "processing",
 }
 
 
 def get_order_status(order_id: str) -> dict:
-    order = _FAKE_ORDERS.get(order_id)
-    if order is None:
-        return {
-            "order_id": order_id,
-            "found": False,
-            "message": f"No order found with ID '{order_id}'.",
-        }
-    return {"order_id": order_id, "found": True, **order}
+    status = _FAKE_ORDERS.get(order_id)
+    if status is None:
+        return {"error": "order not found"}
+    return {"order_id": order_id, "status": status}
