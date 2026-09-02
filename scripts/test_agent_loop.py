@@ -13,5 +13,6 @@ if __name__ == "__main__":
         "What's the status of order ORD-999?",
     ]:
         print(f"> {message}")
-        print(run_agent_loop(message))
+        result = run_agent_loop(message)
+        print(f"[succeeded={result.succeeded}] {result.text}")
         print()

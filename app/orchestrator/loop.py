@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 
 from openai import OpenAI
 
@@ -25,6 +26,12 @@ TOOL_DISPATCH = {
 _client = OpenAI(api_key=settings.openai_api_key)
 
 
+@dataclass
+class AgentResult:
+    text: str
+    succeeded: bool
+
+
 def _run_tool_call(tool_call) -> dict:
     tool_fn = TOOL_DISPATCH.get(tool_call.function.name)
     if tool_fn is None:
@@ -41,10 +48,10 @@ def _run_tool_call(tool_call) -> dict:
         return {"error": f"invalid arguments for tool '{tool_call.function.name}': {exc}"}
 
 
-def run_agent_loop(user_message: str) -> str:
+def run_agent_loop(user_message: str) -> AgentResult:
     messages = [{"role": "user", "content": user_message}]
 
-    for _ in range(MAX_ITERATIONS):
+    for iteration in range(MAX_ITERATIONS):
         response = _client.chat.completions.create(
             model=settings.llm_model,
             messages=messages,
@@ -54,7 +61,14 @@ def run_agent_loop(user_message: str) -> str:
         message = choice.message
 
         if choice.finish_reason != "tool_calls":
-            return message.content or ""
+            return AgentResult(text=message.content or "", succeeded=True)
+
+        if iteration == MAX_ITERATIONS - 1:
+            # Out of budget and the model still wants tools. Don't execute
+            # them: this turn is about to be abandoned, and tools can have
+            # real side effects (e.g. issue_refund) that must never fire on
+            # a turn whose result is discarded.
+            break
 
         messages.append(message.model_dump(exclude_unset=True))
 
@@ -68,4 +82,4 @@ def run_agent_loop(user_message: str) -> str:
                 }
             )
 
-    return FAILURE_MESSAGE
+    return AgentResult(text=FAILURE_MESSAGE, succeeded=False)
