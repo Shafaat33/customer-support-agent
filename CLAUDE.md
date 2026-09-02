@@ -40,10 +40,16 @@ them testable/mockable at all.
 
 **Any loop that calls an LLM repeatedly must have a hard iteration cap.** No
 loop driven by model output (tool-calling, agentic retries, etc.) may run
-unbounded — always cap total iterations and define an explicit, non-crashing
-behavior for when the cap is hit (e.g. `app/orchestrator/loop.py`'s
-`MAX_ITERATIONS` returning a clear failure message rather than looping forever
-or raising past the caller).
+unbounded — always cap total iterations. Two things the cap-hit path must do:
+(1) be distinguishable from a real success by the caller — a structured
+result or an exception, never a plain string indistinguishable from the
+model's own text, since nothing downstream (an API layer, an audit log, an
+escalation trigger) can branch on a magic string; (2) never execute a
+tool call on the turn that's about to be abandoned — check remaining
+iteration budget *before* executing a pending tool call, not just before
+making the next LLM call, since a tool can have real side effects (e.g. a
+future `issue_refund`) that must not fire on a turn whose result is
+discarded. See `app/orchestrator/loop.py`'s `AgentResult` / `MAX_ITERATIONS`.
 
 ## Local dev
 
