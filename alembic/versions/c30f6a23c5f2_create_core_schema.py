@@ -94,7 +94,7 @@ def upgrade() -> None:
     sa.Column('idempotency_key', sa.String(), nullable=False),
     sa.Column('status', sa.String(), server_default='pending', nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("status IN ('pending', 'approved', 'rejected', 'completed')", name='ck_refunds_status_valid'),
+    sa.CheckConstraint("status IN ('pending', 'pending_confirmation', 'approved', 'rejected', 'completed')", name='ck_refunds_status_valid'),
     sa.CheckConstraint('amount >= 0', name='ck_refunds_amount_non_negative'),
     sa.ForeignKeyConstraint(['customer_id'], ['customers.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['order_id'], ['orders.id'], ondelete='RESTRICT'),
@@ -122,7 +122,7 @@ def upgrade() -> None:
     sa.Column('content', sa.Text(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("role IN ('customer', 'agent', 'system')", name='ck_ticket_messages_role_valid'),
-    sa.ForeignKeyConstraint(['ticket_id'], ['support_tickets.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['ticket_id'], ['support_tickets.id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index('ix_ticket_messages_ticket_id', 'ticket_messages', ['ticket_id'], unique=False)

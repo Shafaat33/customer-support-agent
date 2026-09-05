@@ -150,7 +150,7 @@ class TicketMessage(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     ticket_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False
+        BigInteger, ForeignKey("support_tickets.id", ondelete="RESTRICT"), nullable=False
     )
     role: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -184,7 +184,7 @@ class Refund(Base):
     __table_args__ = (
         CheckConstraint("amount >= 0", name="ck_refunds_amount_non_negative"),
         CheckConstraint(
-            "status IN ('pending', 'approved', 'rejected', 'completed')",
+            "status IN ('pending', 'pending_confirmation', 'approved', 'rejected', 'completed')",
             name="ck_refunds_status_valid",
         ),
         UniqueConstraint("idempotency_key", name="uq_refunds_idempotency_key"),
