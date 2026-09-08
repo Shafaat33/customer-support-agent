@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 
 from openai import AsyncOpenAI
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.orchestrator.tools import (
@@ -32,6 +33,14 @@ TOOL_DISPATCH = {
     "issue_refund": issue_refund,
 }
 
+# Tools whose write must never be attempted twice with different identities
+# on retry. The orchestrator, not the model, owns generating this key --
+# an LLM has no reliable way to reproduce a byte-identical string across
+# separate generations, which defeats the whole idempotency mechanism.
+IDEMPOTENT_TOOLS = {"issue_refund"}
+
+TOOL_CALL_MAX_ATTEMPTS = 3
+
 _client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 
@@ -39,6 +48,21 @@ _client = AsyncOpenAI(api_key=settings.openai_api_key)
 class AgentResult:
     text: str
     succeeded: bool
+
+
+async def _execute_with_retry(tool_fn, args: dict, tool_name: str) -> dict:
+    last_exc: Exception | None = None
+    for _ in range(TOOL_CALL_MAX_ATTEMPTS):
+        try:
+            return await tool_fn(**args)
+        except (OSError, SQLAlchemyError) as exc:
+            # Transient failure (dropped connection, etc.) -- retry with the
+            # exact same args, including the idempotency key set below, so a
+            # retried issue_refund is recognized as the same attempt, not a
+            # new one.
+            last_exc = exc
+            continue
+    return {"error": f"tool '{tool_name}' failed after {TOOL_CALL_MAX_ATTEMPTS} attempts: {last_exc}"}
 
 
 async def _run_tool_call(tool_call) -> dict:
@@ -51,8 +75,15 @@ async def _run_tool_call(tool_call) -> dict:
     except json.JSONDecodeError:
         return {"error": "invalid tool call arguments: not valid JSON"}
 
+    if tool_call.function.name in IDEMPOTENT_TOOLS:
+        # Derived from the model's own tool_call.id, which is fixed for the
+        # lifetime of processing this one tool call -- stable across any
+        # retry of *executing* it, but distinct for every genuinely separate
+        # tool call the model emits (each gets its own id from the API).
+        args["idempotency_key"] = f"toolcall-{tool_call.id}"
+
     try:
-        return await tool_fn(**args)
+        return await _execute_with_retry(tool_fn, args, tool_call.function.name)
     except TypeError as exc:
         return {"error": f"invalid arguments for tool '{tool_call.function.name}': {exc}"}
 

@@ -7,9 +7,11 @@ from sqlalchemy.exc import IntegrityError
 from app.db.models import Customer, Order, Refund, Shipment
 from app.db.session import async_session_maker
 
-# Assumed default -- Day 1 didn't specify an actual number for this session;
-# confirm against your real velocity limit and adjust.
-REFUND_VELOCITY_LIMIT_30D = Decimal("500.00")
+# From the Day 1 spec: auto-approval requires BOTH the rolling 30-day total
+# (including this request) to stay at or under the dollar cap AND the
+# customer to be under the count cap -- either one tripping requires escalation.
+REFUND_VELOCITY_LIMIT_30D = Decimal("100.00")
+REFUND_VELOCITY_MAX_COUNT_30D = 2
 
 GET_ORDER_STATUS_SCHEMA = {
     "type": "function",
@@ -57,11 +59,7 @@ ISSUE_REFUND_SCHEMA = {
     "type": "function",
     "function": {
         "name": "issue_refund",
-        "description": (
-            "Issue a refund for an order. Idempotent: calling this again with the "
-            "same idempotency_key returns the original refund's result rather than "
-            "creating a second refund -- safe to retry."
-        ),
+        "description": "Issue a refund for an order.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -73,15 +71,8 @@ ISSUE_REFUND_SCHEMA = {
                     "type": "string",
                     "description": "Refund amount as a decimal string, e.g. '19.99'.",
                 },
-                "idempotency_key": {
-                    "type": "string",
-                    "description": (
-                        "A unique key for this refund attempt. Reusing the same key "
-                        "for a retried request is safe and returns the original result."
-                    ),
-                },
             },
-            "required": ["order_id", "amount", "idempotency_key"],
+            "required": ["order_id", "amount"],
             "additionalProperties": False,
         },
     },
@@ -193,14 +184,34 @@ async def issue_refund(order_id, amount, idempotency_key) -> dict:
                     select(Customer.id).where(Customer.id == order.customer_id).with_for_update()
                 )
 
-                window_start = datetime.now(timezone.utc) - timedelta(days=30)
-                recent_total = await session.scalar(
-                    select(func.coalesce(func.sum(Refund.amount), 0)).where(
-                        Refund.customer_id == order.customer_id,
-                        Refund.created_at > window_start,
-                    )
+                # Re-check for this exact key *after* acquiring the lock, so
+                # a retry that arrives while another attempt held the lock
+                # sees that attempt's now-committed row. This must happen
+                # before the velocity check: a retry of an already-approved
+                # refund must return that original result, never be
+                # re-evaluated against caps that already counted it (which
+                # could wrongly reject a legitimate retry as over-limit).
+                existing = await session.scalar(
+                    select(Refund).where(Refund.idempotency_key == idempotency_key)
                 )
-                if recent_total + refund_amount > REFUND_VELOCITY_LIMIT_30D:
+                if existing is not None:
+                    return _refund_result(existing, replayed=True)
+
+                window_start = datetime.now(timezone.utc) - timedelta(days=30)
+                recent_total, recent_count = (
+                    await session.execute(
+                        select(
+                            func.coalesce(func.sum(Refund.amount), 0),
+                            func.count(Refund.id),
+                        ).where(
+                            Refund.customer_id == order.customer_id,
+                            Refund.created_at > window_start,
+                        )
+                    )
+                ).one()
+                over_dollar_cap = recent_total + refund_amount > REFUND_VELOCITY_LIMIT_30D
+                over_count_cap = recent_count >= REFUND_VELOCITY_MAX_COUNT_30D
+                if over_dollar_cap or over_count_cap:
                     return {"error": "refund velocity limit exceeded", "requires_escalation": True}
 
                 refund = Refund(
